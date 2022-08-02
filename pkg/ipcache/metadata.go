@@ -139,53 +139,6 @@ func (m *metadata) getLocked(prefix netip.Prefix) prefixInfo {
 	return m.m[prefix]
 }
 
-// handleTemporaryStringReprIssue determines the string representation of the
-// specified prefix to use, in a way that fits with the current IPCache design.
-// In particular, IPCache.Upsert() treats prefixes differently if they are
-// specified as "w.x.y.z" vs. "w.x.y.z/32". "w.x.y.z" keys are considered as
-// coming from a pod handler, and hence should be prioritized over "w.x.y.z/32"
-// even though both representations of this IP (prefix) technically cover the
-// same peer.
-//
-// During the transition of the IPCache from the string-based interface to
-// netip.Prefix, these two representations now collide. On the ipc.metadata
-// side of things, the internal storage can handle this conflict and
-// appropriately resolve which identities to use and how to upsert into the
-// IPCache. However, the main IPCache structure currently expects the callers
-// to understand the difference between these two ways to represent an
-// individual IP peer and specify the appropriate key string.
-//
-// Currently, pod IPs are injected directly into IPCache and not via metadata,
-// so they will always be injected with the key "w.x.y.z". Node IPs are also
-// currently injected with the format "w.x.y.z", although this is expected to
-// be changed shortly by a followup PR to use the "w.x.y.z/32" format. For now,
-// kube-apiserver event handlers _do_ use the metadata cache and hence hit this
-// code and would use "w.x.y.z/32". However, if the same IP represents both a
-// node in the cluster AND the kube-apiserver address, this means that two
-// separate ipc.Upsert()s would occur for the IP->Identity:
-// - "w.x.y.z" -> host / remote-node
-// - "w.x.y.z/32" -> kube-apiserver
-//
-// This is bad, because it means that the IPCache would consider the peer as
-// only a host / remote-node and not the kube-apiserver. This breaks the
-// kube-apiserver policy feature.
-//
-// To fix this, we just check here whether the prefix represents a pod IP by
-// determining the host for that IP (if there's a host, it must be a pod on
-// that host). If so, we use "w.x.y.z/32" format. If not, it should be safe
-// to use "w.x.y.z" format (until we switch the node IP handling over to the
-// metadata cache interface).
-//
-// Must hold ipc.Mutex while calling this function.
-func (ipc *IPCache) handleTemporaryStringReprIssue(prefix netip.Prefix) string {
-	p := prefix.String()
-	hIP, _ := ipc.getHostIPCache(p)
-	if hIP.IsUnspecified() {
-		return p
-	}
-	return prefix.Addr().String()
-}
-
 // InjectLabels injects labels from the ipcache metadata (IDMD) map into the
 // identities used for the prefixes in the IPCache. The given source is the
 // source of the caller, as inserting into the IPCache requires knowing where
@@ -315,7 +268,12 @@ func (ipc *IPCache) InjectLabels(ctx context.Context, modifiedPrefixes []netip.P
 	ipc.mutex.Lock()
 	defer ipc.mutex.Unlock()
 	for p, id := range entriesToReplace {
-		prefix := ipc.handleTemporaryStringReprIssue(p)
+		// TODO: We should be able to store & restore this info from
+		// the prefixInfo structure so that there isn't this weird
+		// split where some ipcache updates come through the metadata
+		// side and merge with other relevant info while other updates
+		// come down directly to the IPCache.Upsert codepath.
+		prefix := p.String()
 		hIP, key := ipc.getHostIPCache(prefix)
 		meta := ipc.getK8sMetadata(prefix)
 		if _, err2 := ipc.upsertLocked(

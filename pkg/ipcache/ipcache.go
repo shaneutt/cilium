@@ -4,6 +4,7 @@
 package ipcache
 
 import (
+	"errors"
 	"net"
 	"net/netip"
 
@@ -412,6 +413,27 @@ func (ipc *IPCache) DumpToListener(listener IPIdentityMappingListener) {
 	ipc.RLock()
 	ipc.DumpToListenerLocked(listener)
 	ipc.RUnlock()
+}
+
+// UpsertIdentity is currently unused. The idea is that this API will interface
+// with the IPCache.metadata to associate the identity with the prefix, causing
+// the identity determination to be overruled based on the source here, but
+// still merge all of the other metadata from the IPCache.metadata map like the
+// encrypt key.
+//
+// TODO: Do we need the host for this identity? Seems kinda like it.
+func (ipc *IPCache) UpsertIdentity(prefix netip.Prefix, hostIP net.IP, id Identity, src source.Source, resource types.ResourceID, aux ...IPMetadata) (bool, error) {
+	// TODO: It would be nice to make this play nice with InjectLabels()
+	// to ensure proper identity allocation/release when different
+	// identities are associated with a particular prefix.
+	// Could we get away with making this asynchronous too?
+	// Also store/merge info like encrypt keys, k8sMeta in ipc.metadata?
+	return false, errors.New("not implemented")
+}
+
+func (ipc *IPCache) RemoveIdentity(prefix netip.Prefix, resource types.ResourceID) error {
+	// TODO: Implement
+	return errors.New("not implemented")
 }
 
 // UpsertMetadata upserts a given IP and some corresponding information into

@@ -5,7 +5,6 @@ package manager
 
 import (
 	"context"
-	"errors"
 	"math"
 	"net"
 	"net/netip"
@@ -53,8 +52,10 @@ type nodeEntry struct {
 
 // IPCache is the set of interactions the node manager performs with the ipcache
 type IPCache interface {
-	Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *ipcache.K8sMetadata, newIdentity ipcache.Identity) (bool, error)
-	Delete(IP string, source source.Source) bool
+	//Upsert(ip string, hostIP net.IP, hostKey uint8, k8sMeta *ipcache.K8sMetadata, newIdentity ipcache.Identity) (bool, error)
+	UpsertMetadata(prefix netip.Prefix, src source.Source, rid ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata)
+	UpsertIdentity(prefix netip.Prefix, hostIP net.IP, newIdentity ipcache.Identity, src source.Source, rid ipcacheTypes.ResourceID, aux ...ipcache.IPMetadata) (bool, error)
+	RemoveIdentity(prefix netip.Prefix, rid ipcacheTypes.ResourceID) error
 	UpsertLabels(prefix netip.Prefix, lbls labels.Labels, src source.Source, rid ipcacheTypes.ResourceID)
 }
 
@@ -393,17 +394,26 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 	dpUpdate := true
 	nodeIP := n.GetNodeIP(false)
 
-	remoteHostIdentity := identity.ReservedIdentityHost
+	// If a remote node tells us its specific identity, we will trust it
+	// and inject into the IPcache the specific identity it provides.
+	// Otherwise we'll just associate labels with the IP that represent
+	// the location in the cluster (localhost or remote-node).
+	//
+	// TODO: Can we drop the host logic here because the remote-node
+	// selector already takes m.conf.RemoteNodeIdentitiesEnabled() into
+	// account when calculating policy?
+	remoteHostIdentity := identity.IdentityUnknown
+	remoteHostLabel := labels.LabelHost
 	if m.conf.RemoteNodeIdentitiesEnabled() {
 		nid := identity.NumericIdentity(n.NodeIdentity)
 		if nid != identity.IdentityUnknown && nid != identity.ReservedIdentityHost {
 			remoteHostIdentity = nid
 		} else if !n.IsLocal() {
-			remoteHostIdentity = identity.ReservedIdentityRemoteNode
+			remoteHostLabel = labels.LabelRemoteNode
 		}
 	}
 
-	var ipsAdded, healthIPsAdded, ingressIPsAdded []string
+	var ipsAdded, healthIPsAdded, ingressIPsAdded []netip.Prefix
 
 	// helper function with the required logic to skip IPCache interactions
 	skipIPCache := func(address nodeTypes.Address) bool {
@@ -441,69 +451,50 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 			key = 0
 		}
 
-		ipAddrStr := address.IP.String()
-		_, err := m.ipcache.Upsert(ipAddrStr, tunnelIP, key, nil, ipcache.Identity{
-			ID:     remoteHostIdentity,
-			Source: n.Source,
-		})
-
 		var prefix netip.Prefix
 		if v4 := address.IP.To4(); v4 != nil {
 			prefix = ip.IPToNetPrefix(v4)
 		} else {
 			prefix = ip.IPToNetPrefix(address.IP.To16())
 		}
-		resource := ipcacheTypes.NewResourceID(ipcacheTypes.ResourceKindNode, "", n.Name)
-		m.upsertIntoIDMD(prefix, remoteHostIdentity, resource)
 
-		// Upsert() will return true if the ipcache entry is owned by
-		// the source of the node update that triggered this node
-		// update (kvstore, k8s, ...) The datapath is only updated if
-		// that source of truth is updated.
-		// The only exception are kube-apiserver entries. In that case,
-		// we still want to inform subscribers about changes in auxiliary
-		// data such as for example the health endpoint.
-		overwriteErr := &ipcache.ErrOverwrite{
-			ExistingSrc: source.KubeAPIServer,
-			NewSrc:      n.Source,
-		}
-		if err != nil && !errors.Is(err, overwriteErr) {
-			dpUpdate = false
+		if remoteHostIdentity == identity.IdentityUnknown {
+			m.ipcache.UpsertMetadata(prefix, n.Source, n.ResourceID, remoteHostLabel, ipcacheTypes.EncryptKey(key), ipcacheTypes.TunnelPeer(tunnelIP))
 		} else {
-			ipsAdded = append(ipsAdded, ipAddrStr)
+			// TODO: What if we don't know this identity yet??
+			secID := ipcache.Identity{
+				ID:     remoteHostIdentity,
+				Source: n.Source,
+			}
+			m.ipcache.UpsertIdentity(prefix, tunnelIP, secID, n.Source, n.ResourceID, ipcacheTypes.EncryptKey(key), ipcacheTypes.TunnelPeer(tunnelIP))
 		}
+		ipsAdded = append(ipsAdded, prefix)
 	}
 
 	for _, address := range []net.IP{n.IPv4HealthIP, n.IPv6HealthIP} {
 		if address == nil {
 			continue
 		}
-		addrStr := address.String()
-		_, err := m.ipcache.Upsert(addrStr, nodeIP, n.EncryptionKey, nil, ipcache.Identity{
+		prefix := ip.IPToNetPrefix(address)
+		secID := ipcache.Identity{
 			ID:     identity.ReservedIdentityHealth,
 			Source: n.Source,
-		})
-		if err != nil {
-			dpUpdate = false
-		} else {
-			healthIPsAdded = append(healthIPsAdded, addrStr)
 		}
+		m.ipcache.UpsertIdentity(prefix, nodeIP, secID, n.Source, n.ResourceID)
+		healthIPsAdded = append(healthIPsAdded, prefix)
 	}
 
 	for _, address := range []net.IP{n.IPv4IngressIP, n.IPv6IngressIP} {
 		if address == nil {
 			continue
 		}
-		addrStr := address.String()
-		_, err := m.ipcache.Upsert(addrStr, nodeIP, n.EncryptionKey, nil, ipcache.Identity{
+		prefix := ip.IPToNetPrefix(address)
+		secID := ipcache.Identity{
 			ID:     identity.ReservedIdentityIngress,
 			Source: n.Source,
-		})
-		if err != nil {
-			dpUpdate = false
-		} else {
-			ingressIPsAdded = append(ingressIPsAdded, addrStr)
 		}
+		m.ipcache.UpsertIdentity(prefix, nodeIP, secID, n.Source, n.ResourceID)
+		ingressIPsAdded = append(ingressIPsAdded, prefix)
 	}
 
 	m.mutex.Lock()
@@ -537,13 +528,14 @@ func (m *Manager) NodeUpdated(n nodeTypes.Node) {
 			}
 			oldNodeIPAddrs = append(oldNodeIPAddrs, address.IP)
 		}
-		m.deleteIPCache(oldNode.Source, oldNodeIPAddrs, ipsAdded)
+		// TODO: This should be a request to delete node labels from the IDMD, not a direct IPCache manipulation.
+		m.deleteIPCache(oldNode, oldNodeIPAddrs, ipsAdded)
 
 		// Delete the old health IP addresses if they have changed in this node.
-		m.deleteIPCache(oldNode.Source, []net.IP{oldNode.IPv4HealthIP, oldNode.IPv6HealthIP}, healthIPsAdded)
+		m.deleteIPCache(oldNode, []net.IP{oldNode.IPv4HealthIP, oldNode.IPv6HealthIP}, healthIPsAdded)
 
 		// Delete the old ingress IP addresses if they have changed in this node.
-		m.deleteIPCache(oldNode.Source, []net.IP{oldNode.IPv4IngressIP, oldNode.IPv6IngressIP}, ingressIPsAdded)
+		m.deleteIPCache(oldNode, []net.IP{oldNode.IPv4IngressIP, oldNode.IPv6IngressIP}, ingressIPsAdded)
 
 		entry.mutex.Unlock()
 	} else {
@@ -576,15 +568,15 @@ func (m *Manager) upsertIntoIDMD(prefix netip.Prefix, id identity.NumericIdentit
 
 // deleteIPCache deletes the IP addresses from the IPCache with the 'oldSource'
 // if they are not found in the newIPs slice.
-func (m *Manager) deleteIPCache(oldSource source.Source, oldIPs []net.IP, newIPs []string) {
+func (m *Manager) deleteIPCache(oldNode nodeTypes.Node, oldIPs []net.IP, newIPs []netip.Prefix) {
 	for _, address := range oldIPs {
 		if address == nil {
 			continue
 		}
-		addrStr := address.String()
+		prefix := ip.IPToNetPrefix(address)
 		var found bool
 		for _, ipAdded := range newIPs {
-			if ipAdded == addrStr {
+			if ipAdded == prefix {
 				found = true
 				break
 			}
@@ -592,7 +584,7 @@ func (m *Manager) deleteIPCache(oldSource source.Source, oldIPs []net.IP, newIPs
 		// Delete from the IPCache if the node's IP addresses was not
 		// added in this update.
 		if !found {
-			m.ipcache.Delete(addrStr, oldSource)
+			m.ipcache.RemoveIdentity(prefix, oldNode.ResourceID)
 		}
 	}
 }
@@ -639,7 +631,7 @@ func (m *Manager) NodeDeleted(n nodeTypes.Node) {
 			continue
 		}
 
-		m.ipcache.Delete(address.IP.String(), n.Source)
+		m.ipcache.RemoveIdentity(ip.IPToNetPrefix(address.IP), n.ResourceID)
 	}
 
 	for _, address := range []net.IP{
@@ -647,7 +639,7 @@ func (m *Manager) NodeDeleted(n nodeTypes.Node) {
 		entry.node.IPv4IngressIP, entry.node.IPv6IngressIP,
 	} {
 		if address != nil {
-			m.ipcache.Delete(address.String(), n.Source)
+			m.ipcache.RemoveIdentity(ip.IPToNetPrefix(address), n.ResourceID)
 		}
 	}
 
