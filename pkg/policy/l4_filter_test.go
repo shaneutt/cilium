@@ -1555,8 +1555,9 @@ func (ds *PolicyTestSuite) TestMergingWithDifferentEndpointSelectedAllowAllL7(c 
 }
 
 // Case 12: allow all at L3 in one rule with restrictions at L7. Determine that
-//          the host should always be allowed. From Host should go to proxy
-//          allow all; other L3 should restrict at L7 in a separate filter.
+//
+//	the host should always be allowed. From Host should go to proxy
+//	allow all; other L3 should restrict at L7 in a separate filter.
 func (ds *PolicyTestSuite) TestAllowingLocalhostShadowsL7(c *C) {
 
 	// This test checks that when the AllowLocalhost=always option is

@@ -52,11 +52,11 @@ type ingressServiceUpdatedEvent struct {
 // tasks:
 //   - Watch cilium Ingress object
 //   - Manage related child resources for this Ingress
-//   	- Service
-//      - Endpoint
-//      - CiliumEnvoyConfig
+//   - Service
+//   - Endpoint
+//   - CiliumEnvoyConfig
 //   - Manage synced TLS secrets in given namespace
-//		- TLS secrets
+//   - TLS secrets
 type IngressController struct {
 	ingressInformer cache.Controller
 	ingressStore    cache.Store

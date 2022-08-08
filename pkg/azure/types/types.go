@@ -44,7 +44,7 @@ type AzureSpec struct {
 
 // AzureStatus is the status of Azure addressing of the node
 //
-// This struct is embedded into v2.CiliumNode
+// # This struct is embedded into v2.CiliumNode
 //
 // +k8s:deepcopy-gen=true
 type AzureStatus struct {

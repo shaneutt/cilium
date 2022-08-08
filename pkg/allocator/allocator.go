@@ -49,24 +49,25 @@ const (
 // Note that the numeric IDs are selected locally and verified with the Backend.
 //
 // Lookup ID by key:
-// 1. Return ID from local cache updated by watcher (no Backend interactions)
-// 2. Do ListPrefix() on slave key excluding node suffix, return the first
-//    result that matches the exact prefix.
+//  1. Return ID from local cache updated by watcher (no Backend interactions)
+//  2. Do ListPrefix() on slave key excluding node suffix, return the first
+//     result that matches the exact prefix.
 //
 // Lookup key by ID:
 // 1. Return key from local cache updated by watcher (no Backend interactions)
 // 2. Do Get() on master key, return result
 //
 // Allocate:
-// 1. Check local key cache, increment, and return if key is already in use
-//    locally (no Backend interactions)
-// 2. Check local cache updated by watcher, if...
+//  1. Check local key cache, increment, and return if key is already in use
+//     locally (no Backend interactions)
+//  2. Check local cache updated by watcher, if...
 //
 // ... match found:
 // 2.1 Create a new slave key. This operation is potentially racy as the master
-//     key can be removed in the meantime.
-//       etcd: Create is made conditional on existence of master key
-//       consul: locking
+//
+//	key can be removed in the meantime.
+//	  etcd: Create is made conditional on existence of master key
+//	  consul: locking
 //
 // ... match not found:
 // 2.1 Select new unused id from local cache
@@ -157,8 +158,8 @@ type AllocatorOption func(*Allocator)
 // NewAllocatorForGC returns an allocator that can be used to run RunGC()
 //
 // The allocator can be configured by passing in additional options:
-//  - WithMin(id) - minimum ID to allocate (default: 1)
-//  - WithMax(id) - maximum ID to allocate (default max(uint64))
+//   - WithMin(id) - minimum ID to allocate (default: 1)
+//   - WithMax(id) - maximum ID to allocate (default max(uint64))
 func NewAllocatorForGC(backend Backend, opts ...AllocatorOption) *Allocator {
 	a := &Allocator{
 		backend: backend,
@@ -272,9 +273,9 @@ type Backend interface {
 // unique.
 //
 // The allocator can be configured by passing in additional options:
-//  - WithEvents() - enable Events channel
-//  - WithMin(id) - minimum ID to allocate (default: 1)
-//  - WithMax(id) - maximum ID to allocate (default max(uint64))
+//   - WithEvents() - enable Events channel
+//   - WithMin(id) - minimum ID to allocate (default: 1)
+//   - WithMax(id) - maximum ID to allocate (default max(uint64))
 //
 // After creation, IDs can be allocated with Allocate() and released with
 // Release()
@@ -459,11 +460,11 @@ func (a *Allocator) encodeKey(key AllocatorKey) string {
 }
 
 // Return values:
-// 1. allocated ID
-// 2. whether the ID is newly allocated from kvstore
-// 3. whether this is the first owner that holds a reference to the key in
-//    localkeys store
-// 4. error in case of failure
+//  1. allocated ID
+//  2. whether the ID is newly allocated from kvstore
+//  3. whether this is the first owner that holds a reference to the key in
+//     localkeys store
+//  4. error in case of failure
 func (a *Allocator) lockedAllocate(ctx context.Context, key AllocatorKey) (idpool.ID, bool, bool, error) {
 	var firstUse bool
 
@@ -602,11 +603,11 @@ func (a *Allocator) lockedAllocate(ctx context.Context, key AllocatorKey) (idpoo
 // allocation is re-attempted for maxAllocAttempts times.
 //
 // Return values:
-// 1. allocated ID
-// 2. whether the ID is newly allocated from kvstore
-// 3. whether this is the first owner that holds a reference to the key in
-//    localkeys store
-// 4. error in case of failure
+//  1. allocated ID
+//  2. whether the ID is newly allocated from kvstore
+//  3. whether this is the first owner that holds a reference to the key in
+//     localkeys store
+//  4. error in case of failure
 func (a *Allocator) Allocate(ctx context.Context, key AllocatorKey) (idpool.ID, bool, bool, error) {
 	var (
 		err      error
